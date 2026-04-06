@@ -83,21 +83,26 @@ pub fn read_key_file(path: &Path) -> Result<String, ConfigError> {
     Ok(nsec)
 }
 
-/// Write a bare bech32 nsec to a key file with restricted permissions (mode 0600).
+/// Write a bare bech32 nsec to a key file with restricted permissions.
+///
+/// On Unix, the file is created with mode 0600 (owner read/write only).
+/// On Windows, the file inherits default ACLs from the parent directory.
 pub fn write_key_file(path: &Path, nsec: &str) -> Result<(), ConfigError> {
     use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
 
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(path)
-        .map_err(|e| ConfigError::WriteKeyFile {
-            path: path.to_path_buf(),
-            source: e,
-        })?;
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+
+    let mut file = opts.open(path).map_err(|e| ConfigError::WriteKeyFile {
+        path: path.to_path_buf(),
+        source: e,
+    })?;
 
     file.write_all(nsec.as_bytes())
         .map_err(|e| ConfigError::WriteKeyFile {
@@ -112,21 +117,26 @@ pub fn write_key_file(path: &Path, nsec: &str) -> Result<(), ConfigError> {
     Ok(())
 }
 
-/// Write a bare bech32 npub to a public key file (mode 0644).
+/// Write a bare bech32 npub to a public key file.
+///
+/// On Unix, the file is created with mode 0644 (owner read/write, others read).
+/// On Windows, the file inherits default ACLs from the parent directory.
 pub fn write_pub_file(path: &Path, npub: &str) -> Result<(), ConfigError> {
     use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
 
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o644)
-        .open(path)
-        .map_err(|e| ConfigError::WriteKeyFile {
-            path: path.to_path_buf(),
-            source: e,
-        })?;
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o644);
+    }
+
+    let mut file = opts.open(path).map_err(|e| ConfigError::WriteKeyFile {
+        path: path.to_path_buf(),
+        source: e,
+    })?;
 
     file.write_all(npub.as_bytes())
         .map_err(|e| ConfigError::WriteKeyFile {
@@ -672,7 +682,8 @@ node:
         // Should include current directory
         assert!(paths.iter().any(|p| p.ends_with("fips.yaml")));
 
-        // Should include /etc/fips
+        // Should include /etc/fips on Unix
+        #[cfg(unix)]
         assert!(
             paths
                 .iter()
@@ -710,6 +721,7 @@ node:
         assert_eq!(loaded_identity.npub(), identity.npub());
     }
 
+    #[cfg(unix)]
     #[test]
     fn test_key_file_permissions() {
         use std::os::unix::fs::MetadataExt;
@@ -723,6 +735,7 @@ node:
         assert_eq!(metadata.mode() & 0o777, 0o600);
     }
 
+    #[cfg(unix)]
     #[test]
     fn test_pub_file_permissions() {
         use std::os::unix::fs::MetadataExt;

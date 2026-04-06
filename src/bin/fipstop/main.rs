@@ -9,7 +9,9 @@ use client::ControlClient;
 use event::{Event, EventHandler};
 use fips::version;
 use ratatui::crossterm::event::{KeyCode, KeyModifiers};
-use std::path::{Path, PathBuf};
+#[cfg(unix)]
+use std::path::Path;
+use std::path::PathBuf;
 use std::time::Duration;
 
 /// FIPS mesh monitoring TUI
@@ -36,17 +38,27 @@ struct Cli {
 
 /// Determine the default socket path.
 ///
-/// Checks the system-wide path first (used when the daemon runs as a
-/// systemd service), then falls back to the user's XDG runtime directory.
+/// On Unix, checks the system-wide path first (used when the daemon runs as
+/// a systemd service), then falls back to the user's XDG runtime directory.
 /// Uses directory existence rather than socket file existence so the check
 /// works even when the user lacks traverse permission on /run/fips/ (0750).
+///
+/// On Windows, returns the default TCP port ("21210") since the control
+/// socket uses a TCP listener on localhost.
 fn default_socket_path() -> PathBuf {
-    if Path::new("/run/fips").exists() {
-        PathBuf::from("/run/fips/control.sock")
-    } else if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
-        PathBuf::from(format!("{runtime_dir}/fips/control.sock"))
-    } else {
-        PathBuf::from("/tmp/fips-control.sock")
+    #[cfg(unix)]
+    {
+        if Path::new("/run/fips").exists() {
+            PathBuf::from("/run/fips/control.sock")
+        } else if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
+            PathBuf::from(format!("{runtime_dir}/fips/control.sock"))
+        } else {
+            PathBuf::from("/tmp/fips-control.sock")
+        }
+    }
+    #[cfg(windows)]
+    {
+        PathBuf::from("21210")
     }
 }
 

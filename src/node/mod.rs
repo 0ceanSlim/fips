@@ -812,6 +812,7 @@ impl Node {
     ///
     /// Finds the Ethernet transport instance bound to the named interface
     /// and parses the MAC portion into a 6-byte TransportAddr.
+    #[allow(unreachable_code, unused_variables)]
     fn resolve_ethernet_addr(
         &self,
         addr_str: &str,

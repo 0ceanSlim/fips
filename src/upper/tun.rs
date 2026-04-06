@@ -3,17 +3,32 @@
 //! Manages the TUN device for sending and receiving IPv6 packets.
 //! The TUN interface presents FIPS addresses to the local system,
 //! allowing standard socket applications to communicate over the mesh.
+//!
+//! Platform-specific implementations:
+//! - Linux: Uses the `tun` crate with `rtnetlink` for interface configuration
+//! - macOS: Uses the `tun` crate with `ifconfig`/`route` for interface configuration
+//! - Windows: Uses the `wintun` crate for TUN device support
 
+#[cfg(windows)]
+use crate::FipsAddress;
+#[cfg(unix)]
 use crate::{FipsAddress, TunConfig};
+#[cfg(unix)]
 use std::fs::File;
+#[cfg(unix)]
 use std::io::Read;
 #[cfg(not(target_os = "macos"))]
+#[cfg(unix)]
 use std::io::Write;
 use std::net::Ipv6Addr;
+#[cfg(unix)]
 use std::os::unix::io::{AsRawFd, FromRawFd};
 use std::sync::mpsc;
 use thiserror::Error;
-use tracing::{debug, error, trace};
+#[cfg(unix)]
+use tracing::error;
+use tracing::{debug, trace};
+#[cfg(unix)]
 use tun::Layer;
 
 /// Channel sender for packets to be written to TUN.
@@ -28,7 +43,7 @@ pub type TunOutboundRx = tokio::sync::mpsc::Receiver<Vec<u8>>;
 #[derive(Debug, Error)]
 pub enum TunError {
     #[error("failed to create TUN device: {0}")]
-    Create(#[from] tun::Error),
+    Create(String),
 
     #[error("failed to configure TUN device: {0}")]
     Configure(String),
@@ -43,8 +58,16 @@ pub enum TunError {
     #[error("permission denied: {0}")]
     PermissionDenied(String),
 
+    #[cfg(unix)]
     #[error("IPv6 is disabled (set net.ipv6.conf.all.disable_ipv6=0)")]
     Ipv6Disabled,
+}
+
+#[cfg(unix)]
+impl From<tun::Error> for TunError {
+    fn from(e: tun::Error) -> Self {
+        TunError::Create(e.to_string())
+    }
 }
 
 /// TUN device state.
@@ -71,7 +94,12 @@ impl std::fmt::Display for TunState {
     }
 }
 
+// ============================================================================
+// Unix (Linux + macOS) TUN implementation
+// ============================================================================
+
 /// FIPS TUN device wrapper.
+#[cfg(unix)]
 pub struct TunDevice {
     device: tun::Device,
     name: String,
@@ -79,6 +107,7 @@ pub struct TunDevice {
     address: FipsAddress,
 }
 
+#[cfg(unix)]
 impl TunDevice {
     /// Create or open a TUN device.
     ///
@@ -227,6 +256,7 @@ impl TunDevice {
 /// Multiple producers can send packets via the TunTx channel.
 ///
 /// Also performs TCP MSS clamping on inbound SYN-ACK packets.
+#[cfg(unix)]
 pub struct TunWriter {
     file: File,
     rx: mpsc::Receiver<Vec<u8>>,
@@ -234,6 +264,7 @@ pub struct TunWriter {
     max_mss: u16,
 }
 
+#[cfg(unix)]
 impl TunWriter {
     /// Run the writer loop.
     ///
@@ -318,6 +349,7 @@ impl TunWriter {
 /// The loop exits when the TUN interface is deleted (EFAULT) or an unrecoverable
 /// error occurs.
 #[cfg(not(target_os = "macos"))]
+#[cfg(unix)]
 pub fn run_tun_reader(
     mut device: TunDevice,
     mtu: u16,
@@ -464,6 +496,7 @@ pub fn run_tun_reader(
 }
 
 /// Common setup for TUN reader: extracts name, allocates buffer, computes max MSS.
+#[cfg(unix)]
 fn tun_reader_setup(device: &TunDevice, mtu: u16, transport_mtu: u16) -> (String, Vec<u8>, u16) {
     use super::icmp::effective_ipv6_mtu;
 
@@ -490,6 +523,7 @@ fn tun_reader_setup(device: &TunDevice, mtu: u16, transport_mtu: u16) -> (String
 }
 
 /// Process a single TUN packet. Returns `false` if the reader should exit.
+#[cfg(unix)]
 fn handle_tun_packet(
     packet: &mut [u8],
     max_mss: u16,
@@ -531,6 +565,17 @@ fn handle_tun_packet(
     true
 }
 
+#[cfg(unix)]
+impl std::fmt::Debug for TunDevice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TunDevice")
+            .field("name", &self.name)
+            .field("mtu", &self.mtu)
+            .field("address", &self.address)
+            .finish()
+    }
+}
+
 /// Log basic information about an IPv6 packet at TRACE level.
 pub fn log_ipv6_packet(packet: &[u8]) {
     if packet.len() < 40 {
@@ -570,6 +615,7 @@ pub fn log_ipv6_packet(packet: &[u8]) {
 /// This deletes the interface, which will cause any blocking reads
 /// to return an error. Use this for graceful shutdown when the TUN device
 /// has been moved to another thread.
+#[cfg(unix)]
 pub async fn shutdown_tun_interface(name: &str) -> Result<(), TunError> {
     debug!("Shutting down TUN interface {}", name);
     platform::delete_interface(name).await?;
@@ -577,13 +623,48 @@ pub async fn shutdown_tun_interface(name: &str) -> Result<(), TunError> {
     Ok(())
 }
 
+// ============================================================================
+// Windows TUN stub (implementation in next commit)
+// ============================================================================
+
+#[cfg(windows)]
+pub struct TunDevice {
+    _placeholder: (),
+}
+
+#[cfg(windows)]
+pub struct TunWriter {
+    _placeholder: (),
+}
+
+#[cfg(windows)]
+impl TunWriter {
+    pub fn run(self) {
+        unimplemented!("Windows TUN writer — see next commit")
+    }
+}
+
+#[cfg(windows)]
+pub fn run_tun_reader(
+    _device: TunDevice,
+    _mtu: u16,
+    _our_addr: FipsAddress,
+    _tun_tx: TunTx,
+    _outbound_tx: TunOutboundTx,
+    _transport_mtu: u16,
+) {
+    unimplemented!("Windows TUN reader — see next commit")
+}
+
+#[cfg(windows)]
+pub async fn shutdown_tun_interface(_name: &str) -> Result<(), TunError> {
+    unimplemented!("Windows TUN shutdown — see next commit")
+}
+
+#[cfg(windows)]
 impl std::fmt::Debug for TunDevice {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("TunDevice")
-            .field("name", &self.name)
-            .field("mtu", &self.mtu)
-            .field("address", &self.address)
-            .finish()
+        f.debug_struct("TunDevice").finish()
     }
 }
 
