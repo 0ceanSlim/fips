@@ -785,6 +785,26 @@ node:
         );
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn test_key_file_write_read_roundtrip_windows() {
+        let temp_dir = TempDir::new().unwrap();
+        let key_path = temp_dir.path().join("fips.key");
+
+        let identity = crate::Identity::generate();
+        let nsec = crate::encode_nsec(&identity.keypair().secret_key());
+
+        write_key_file(&key_path, &nsec).unwrap();
+
+        // Verify file was created and can be read back
+        let loaded_nsec = read_key_file(&key_path).unwrap();
+        assert_eq!(loaded_nsec, nsec);
+
+        // Verify the loaded nsec produces the same identity
+        let loaded_identity = crate::Identity::from_secret_str(&loaded_nsec).unwrap();
+        assert_eq!(loaded_identity.npub(), identity.npub());
+    }
+
     #[test]
     fn test_resolve_identity_from_config() {
         let mut config = Config::new();

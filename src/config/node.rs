@@ -823,4 +823,13 @@ mod tests {
         assert!((c.loss_threshold - 0.02).abs() < 1e-9);
         assert!((c.etx_threshold - 3.0).abs() < 1e-9); // default
     }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_default_socket_path_windows() {
+        let config = ControlConfig::default();
+        // On Windows, socket_path is a TCP port number
+        let port: u16 = config.socket_path.parse().expect("should be a valid port number");
+        assert_eq!(port, 21210);
+    }
 }

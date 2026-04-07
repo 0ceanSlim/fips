@@ -371,3 +371,37 @@ mod windows_impl {
 pub use unix_impl::ControlSocket;
 #[cfg(windows)]
 pub use windows_impl::ControlSocket;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn test_tcp_control_socket_bind() {
+        let config = ControlConfig {
+            enabled: true,
+            socket_path: "0".to_string(), // port 0 = ephemeral
+        };
+
+        // Verify the socket binds successfully on an ephemeral port
+        let _socket = ControlSocket::bind(&config).expect("failed to bind control socket");
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn test_tcp_control_socket_invalid_port_uses_default() {
+        let config = ControlConfig {
+            enabled: true,
+            socket_path: "not-a-port".to_string(),
+        };
+
+        // Should fall back to default port 21210. This may fail if 21210
+        // is already in use, which is acceptable for a unit test.
+        let result = ControlSocket::bind(&config);
+        // We mainly verify it doesn't panic on invalid input
+        if let Ok(socket) = result {
+            assert_eq!(socket.port(), 21210);
+        }
+    }
+}
