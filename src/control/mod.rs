@@ -14,18 +14,14 @@ pub mod queries;
 
 use crate::config::ControlConfig;
 use protocol::{Request, Response};
-#[cfg(unix)]
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::{mpsc, oneshot};
-#[cfg(unix)]
 use tracing::{debug, info, warn};
 
 /// Maximum request size in bytes (4 KB).
-#[cfg(unix)]
 const MAX_REQUEST_SIZE: usize = 4096;
 
 /// I/O timeout for client connections.
-#[cfg(unix)]
 const IO_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// A message sent from the accept loop to the main event loop.
@@ -35,7 +31,6 @@ pub type ControlMessage = (Request, oneshot::Sender<Response>);
 ///
 /// Shared between Unix and Windows implementations to avoid duplicating
 /// the request/response protocol logic.
-#[cfg(unix)] // Windows will also use this once TCP control socket is added
 async fn handle_connection_generic<S>(
     stream: S,
     control_tx: mpsc::Sender<ControlMessage>,
@@ -280,31 +275,94 @@ mod unix_impl {
 }
 
 // ============================================================================
-// Windows stub (implementation added in commit 3)
+// Windows implementation (TCP on localhost)
 // ============================================================================
 
 #[cfg(windows)]
 mod windows_impl {
     use super::*;
+    use tokio::net::TcpListener;
 
-    /// Control socket listener (Windows TCP stub).
+    /// Default TCP port for the control socket on Windows.
+    const DEFAULT_CONTROL_PORT: u16 = 21210;
+
+    /// Control socket listener (Windows TCP on localhost).
     ///
-    /// On Windows, the control socket uses a TCP listener on localhost
-    /// since Windows does not support Unix domain sockets reliably.
-    /// The full implementation will be added in commit 3.
-    pub struct ControlSocket;
+    /// On Windows, the control socket uses a TCP listener bound to
+    /// `127.0.0.1` since Windows does not support Unix domain sockets
+    /// reliably. Only localhost connections are accepted.
+    ///
+    /// Note: Unlike Unix domain sockets, TCP does not provide filesystem-level
+    /// ACLs. Any local user can connect to the control port. This is acceptable
+    /// for single-user Windows installations but should be documented.
+    pub struct ControlSocket {
+        listener: TcpListener,
+        port: u16,
+    }
 
     impl ControlSocket {
-        /// Bind a new control socket (Windows stub).
-        pub fn bind(_config: &ControlConfig) -> Result<Self, std::io::Error> {
-            Err(std::io::Error::new(
-                std::io::ErrorKind::Unsupported,
-                "Windows control socket not yet implemented",
-            ))
+        /// Bind a TCP control socket on localhost.
+        ///
+        /// Parses the port from `config.socket_path` (which is a port number
+        /// string on Windows, e.g. "21210"). Falls back to the default port
+        /// with a warning if parsing fails.
+        pub fn bind(config: &ControlConfig) -> Result<Self, std::io::Error> {
+            let port: u16 = match config.socket_path.parse() {
+                Ok(p) => p,
+                Err(e) => {
+                    warn!(
+                        path = %config.socket_path,
+                        error = %e,
+                        default = DEFAULT_CONTROL_PORT,
+                        "Invalid control port, using default"
+                    );
+                    DEFAULT_CONTROL_PORT
+                }
+            };
+
+            let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+            let std_listener = std::net::TcpListener::bind(addr)?;
+            std_listener.set_nonblocking(true)?;
+            let listener = TcpListener::from_std(std_listener)?;
+
+            info!(port = port, "Control socket listening on localhost");
+
+            Ok(Self { listener, port })
         }
 
-        /// Run the accept loop (Windows stub).
-        pub async fn accept_loop(self, _control_tx: mpsc::Sender<ControlMessage>) {}
+        /// Get the listening port.
+        pub fn port(&self) -> u16 {
+            self.port
+        }
+
+        /// Run the accept loop, forwarding requests to the main event loop via mpsc.
+        ///
+        /// Each accepted connection is handled in a spawned task using the
+        /// shared `handle_connection_generic` protocol handler.
+        pub async fn accept_loop(self, control_tx: mpsc::Sender<ControlMessage>) {
+            loop {
+                let (stream, addr) = match self.listener.accept().await {
+                    Ok(conn) => conn,
+                    Err(e) => {
+                        warn!(error = %e, "Control socket accept failed");
+                        continue;
+                    }
+                };
+
+                // Only accept connections from localhost
+                if !addr.ip().is_loopback() {
+                    warn!(addr = %addr, "Rejected non-localhost control connection");
+                    continue;
+                }
+
+                let tx = control_tx.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = handle_connection_generic(stream, tx).await {
+                        debug!(error = %e, "Control connection error");
+                    }
+                });
+            }
+        }
     }
 }
 

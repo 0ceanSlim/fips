@@ -28,10 +28,10 @@ use thiserror::Error;
 #[cfg(unix)]
 use tracing::error;
 use tracing::{debug, trace};
-#[cfg(unix)]
-use tun::Layer;
 #[cfg(windows)]
 use tracing::{error, warn};
+#[cfg(unix)]
+use tun::Layer;
 
 /// Channel sender for packets to be written to TUN.
 pub type TunTx = mpsc::Sender<Vec<u8>>;
@@ -625,7 +625,6 @@ pub async fn shutdown_tun_interface(name: &str) -> Result<(), TunError> {
     Ok(())
 }
 
-
 // ============================================================================
 // Windows TUN implementation (wintun)
 // ============================================================================
@@ -861,8 +860,7 @@ mod windows_tun {
         transport_mtu: u16,
     ) {
         use crate::upper::icmp::{
-            build_dest_unreachable, effective_ipv6_mtu, should_send_icmp_error,
-            DestUnreachableCode,
+            DestUnreachableCode, build_dest_unreachable, effective_ipv6_mtu, should_send_icmp_error,
         };
         use crate::upper::tcp_mss::clamp_tcp_mss;
 
@@ -1063,7 +1061,6 @@ mod windows_tun {
         Ok(())
     }
 }
-
 
 // Re-export Windows TUN types at module level
 #[cfg(windows)]

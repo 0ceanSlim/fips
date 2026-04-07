@@ -167,7 +167,14 @@ fn send_request(socket_path: &Path, request_json: &str) -> Result<serde_json::Va
 fn send_request(socket_path: &Path, request_json: &str) -> Result<serde_json::Value, String> {
     use std::net::TcpStream;
 
-    let port: u16 = socket_path.to_string_lossy().parse().unwrap_or(21210);
+    let port_str = socket_path.to_string_lossy();
+    let port: u16 = match port_str.parse() {
+        Ok(p) => p,
+        Err(_) => {
+            eprintln!("warning: invalid port '{}', using default 21210", port_str);
+            21210
+        }
+    };
     let addr = format!("127.0.0.1:{port}");
 
     let mut stream = TcpStream::connect(&addr).map_err(|e| {

@@ -77,7 +77,16 @@ impl ControlClient {
 
     #[cfg(windows)]
     async fn connect(&self) -> Result<tokio::net::TcpStream, String> {
-        let port: u16 = self.address.parse().unwrap_or(21210);
+        let port: u16 = match self.address.parse() {
+            Ok(p) => p,
+            Err(_) => {
+                eprintln!(
+                    "warning: invalid port '{}', using default 21210",
+                    self.address
+                );
+                21210
+            }
+        };
         let addr = format!("127.0.0.1:{port}");
         timeout(IO_TIMEOUT, tokio::net::TcpStream::connect(&addr))
             .await
