@@ -48,7 +48,7 @@ rtnetlink = "0.20.0"
 bluer = { version = "0.17", features = ["bluetoothd", "l2cap"], optional = true }
 
 [target.'cfg(windows)'.dependencies]
-wintun = "0.8"
+wintun = "0.5"
 windows-service = "0.7"
 
 [package.metadata.deb]

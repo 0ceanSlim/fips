@@ -297,8 +297,7 @@ mod service {
 
         rt.block_on(async {
             // Look for config file path from FIPS_CONFIG env var
-            let config_path: Option<PathBuf> =
-                std::env::var("FIPS_CONFIG").ok().map(PathBuf::from);
+            let config_path: Option<PathBuf> = std::env::var("FIPS_CONFIG").ok().map(PathBuf::from);
 
             let (config, loaded_paths) = if let Some(ref config_path) = config_path {
                 match fips::Config::load_file(config_path) {
@@ -420,8 +419,7 @@ mod service {
 
     /// Uninstall the FIPS Windows service (requires Administrator).
     pub fn uninstall_service() -> Result<(), Box<dyn std::error::Error>> {
-        let manager =
-            ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)?;
+        let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)?;
 
         let service = manager.open_service(
             SERVICE_NAME,

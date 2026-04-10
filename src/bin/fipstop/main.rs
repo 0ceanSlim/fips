@@ -64,12 +64,20 @@ fn default_socket_path() -> PathBuf {
 
 /// Determine the default gateway socket path.
 fn default_gateway_socket_path() -> PathBuf {
-    if Path::new("/run/fips").exists() {
-        PathBuf::from("/run/fips/gateway.sock")
-    } else if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
-        PathBuf::from(format!("{runtime_dir}/fips/gateway.sock"))
-    } else {
-        PathBuf::from("/tmp/fips-gateway.sock")
+    #[cfg(unix)]
+    {
+        if Path::new("/run/fips").exists() {
+            PathBuf::from("/run/fips/gateway.sock")
+        } else if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
+            PathBuf::from(format!("{runtime_dir}/fips/gateway.sock"))
+        } else {
+            PathBuf::from("/tmp/fips-gateway.sock")
+        }
+    }
+    #[cfg(windows)]
+    {
+        // Gateway is not supported on Windows; return a placeholder path
+        PathBuf::from("21211")
     }
 }
 

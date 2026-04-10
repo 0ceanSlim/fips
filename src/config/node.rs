@@ -829,7 +829,10 @@ mod tests {
     fn test_default_socket_path_windows() {
         let config = ControlConfig::default();
         // On Windows, socket_path is a TCP port number
-        let port: u16 = config.socket_path.parse().expect("should be a valid port number");
+        let port: u16 = config
+            .socket_path
+            .parse()
+            .expect("should be a valid port number");
         assert_eq!(port, 21210);
     }
 }
