@@ -387,8 +387,10 @@ mod service {
 
     /// Install FIPS as a Windows service (requires Administrator).
     pub fn install_service() -> Result<(), Box<dyn std::error::Error>> {
-        let manager =
-            ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CREATE_SERVICE)?;
+        let manager = ServiceManager::local_computer(
+            None::<&str>,
+            ServiceManagerAccess::CREATE_SERVICE | ServiceManagerAccess::CONNECT,
+        )?;
 
         let exe_path = std::env::current_exe()?;
         let service_info = ServiceInfo {
@@ -404,8 +406,25 @@ mod service {
             account_password: None,
         };
 
-        let service = manager.create_service(&service_info, ServiceAccess::CHANGE_CONFIG)?;
-        service.set_description(SERVICE_DESCRIPTION)?;
+        let service = match manager.create_service(&service_info, ServiceAccess::CHANGE_CONFIG) {
+            Ok(s) => s,
+            Err(windows_service::Error::Winapi(ref e))
+                if e.raw_os_error() == Some(0x431) =>
+            {
+                // ERROR_SERVICE_EXISTS (1073) — open the existing service instead
+                println!(
+                    "Service '{}' already exists, updating configuration...",
+                    SERVICE_NAME
+                );
+                manager.open_service(SERVICE_NAME, ServiceAccess::CHANGE_CONFIG)?
+            }
+            Err(e) => return Err(format!("Failed to create service: {}", e).into()),
+        };
+
+        // set_description is non-critical — don't fail the install over it
+        if let Err(e) = service.set_description(SERVICE_DESCRIPTION) {
+            eprintln!("Warning: could not set service description: {}", e);
+        }
 
         println!("Service '{}' installed successfully.", SERVICE_NAME);
         println!("Start it with: sc start {}", SERVICE_NAME);

@@ -68,10 +68,13 @@ if ($machinePath -notlike "*$InstallDir*") {
     Write-Host "  Added $InstallDir to system PATH"
 }
 
-# Install the service
+# Install the service (run from install dir so current_exe() points to the right path)
 Write-Host "  Registering Windows service..."
+Push-Location $InstallDir
 & "$InstallDir\fips.exe" --install-service
-if ($LASTEXITCODE -ne 0) {
+$exitCode = $LASTEXITCODE
+Pop-Location
+if ($exitCode -ne 0) {
     Write-Error "Failed to install service"
     exit 1
 }
