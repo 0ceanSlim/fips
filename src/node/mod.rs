@@ -30,14 +30,10 @@ use crate::bloom::BloomState;
 use crate::cache::CoordCache;
 use crate::node::session::SessionEntry;
 use crate::peer::{ActivePeer, PeerConnection};
-use crate::transport::ethernet::EthernetTransport;
 #[cfg(unix)]
 use crate::transport::ethernet::EthernetTransport;
 use crate::transport::tcp::TcpTransport;
-use crate::transport::tcp::TcpTransport;
 use crate::transport::tor::TorTransport;
-use crate::transport::tor::TorTransport;
-use crate::transport::udp::UdpTransport;
 use crate::transport::udp::UdpTransport;
 use crate::transport::{
     Link, LinkId, PacketRx, PacketTx, TransportAddr, TransportError, TransportHandle, TransportId,

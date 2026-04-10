@@ -67,6 +67,15 @@ permissions (mode 0770, group `fips`). On Windows, it is a TCP listener
 on localhost. TCP does not provide filesystem-level ACLs, so any local
 user can connect to the control port.
 
+> **Security note (Windows):** The TCP control socket on Windows is a
+> known limitation. Any process running on the local machine can connect
+> to the control port and issue commands, including `disconnect`,
+> `connect`, and `inject-config`. This is acceptable for single-user
+> workstations but may be inappropriate for shared machines. Future
+> improvements may include named pipe support (with Windows ACLs) or an
+> authentication token mechanism. On shared Windows systems, consider
+> using firewall rules to restrict access to the control port.
+
 All tunable protocol parameters live under `node.*`, organized as sysctl-style
 dotted paths. The top-level sections (`tun`, `dns`, `transports`, `peers`)
 handle infrastructure concerns only.

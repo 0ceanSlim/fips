@@ -13,6 +13,7 @@ use fips::version;
 use fips::{Identity, encode_nsec};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 /// FIPS control client
 #[derive(Parser, Debug)]
@@ -110,28 +111,8 @@ impl ShowCommands {
     }
 }
 
-/// Determine the default socket path.
-///
-/// On Unix, checks the system-wide path first (used when the daemon runs as
-/// a systemd service), then falls back to the user's XDG runtime directory.
-///
-/// On Windows, returns the default TCP port ("21210") since the control
-/// socket uses a TCP listener on localhost.
 fn default_socket_path() -> PathBuf {
-    #[cfg(unix)]
-    {
-        if Path::new("/run/fips").exists() {
-            PathBuf::from("/run/fips/control.sock")
-        } else if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
-            PathBuf::from(format!("{runtime_dir}/fips/control.sock"))
-        } else {
-            PathBuf::from("/tmp/fips-control.sock")
-        }
-    }
-    #[cfg(windows)]
-    {
-        PathBuf::from("21210")
-    }
+    fips::config::default_control_path()
 }
 
 /// Send a JSON request to the control socket and return the response.
@@ -160,7 +141,23 @@ fn send_request(socket_path: &Path, request_json: &str) -> Result<serde_json::Va
         }
     })?;
 
-    send_request_over_stream(&mut stream, request_json)
+    let timeout = Duration::from_secs(5);
+    let _ = stream.set_read_timeout(Some(timeout));
+    let _ = stream.set_write_timeout(Some(timeout));
+
+    stream
+        .write_all(request_json.as_bytes())
+        .map_err(|e| format!("failed to send request: {e}"))?;
+    let _ = stream.shutdown(std::net::Shutdown::Write);
+
+    let reader = BufReader::new(&stream);
+    let line = reader
+        .lines()
+        .next()
+        .ok_or("no response from daemon")?
+        .map_err(|e| format!("failed to read response: {e}"))?;
+
+    serde_json::from_str(&line).map_err(|e| format!("invalid response JSON: {e}"))
 }
 
 #[cfg(windows)]
@@ -184,19 +181,16 @@ fn send_request(socket_path: &Path, request_json: &str) -> Result<serde_json::Va
         )
     })?;
 
-    send_request_over_stream(&mut stream, request_json)
-}
+    let timeout = Duration::from_secs(5);
+    let _ = stream.set_read_timeout(Some(timeout));
+    let _ = stream.set_write_timeout(Some(timeout));
 
-/// Send a request and read a response over any Read+Write stream.
-fn send_request_over_stream<S: std::io::Read + Write>(
-    stream: &mut S,
-    request_json: &str,
-) -> Result<serde_json::Value, String> {
     stream
         .write_all(request_json.as_bytes())
         .map_err(|e| format!("failed to send request: {e}"))?;
+    let _ = stream.shutdown(std::net::Shutdown::Write);
 
-    let reader = BufReader::new(stream);
+    let reader = BufReader::new(&stream);
     let line = reader
         .lines()
         .next()

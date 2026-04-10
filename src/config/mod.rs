@@ -68,6 +68,49 @@ pub fn pub_file_path(config_path: &Path) -> PathBuf {
         .join(PUB_FILENAME)
 }
 
+/// Default control socket path for fipsctl / fipstop.
+///
+/// On Unix, checks the system-wide path first (used when the daemon runs as
+/// a systemd service), then falls back to the user's XDG runtime directory.
+/// On Windows, returns the default TCP port ("21210").
+pub fn default_control_path() -> PathBuf {
+    #[cfg(unix)]
+    {
+        if Path::new("/run/fips").exists() {
+            PathBuf::from("/run/fips/control.sock")
+        } else if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
+            PathBuf::from(format!("{runtime_dir}/fips/control.sock"))
+        } else {
+            PathBuf::from("/tmp/fips-control.sock")
+        }
+    }
+    #[cfg(windows)]
+    {
+        PathBuf::from("21210")
+    }
+}
+
+/// Default gateway control socket path.
+///
+/// On Unix, follows the same pattern as the main control socket.
+/// On Windows, returns a placeholder TCP port ("21211").
+pub fn default_gateway_path() -> PathBuf {
+    #[cfg(unix)]
+    {
+        if Path::new("/run/fips").exists() {
+            PathBuf::from("/run/fips/gateway.sock")
+        } else if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
+            PathBuf::from(format!("{runtime_dir}/fips/gateway.sock"))
+        } else {
+            PathBuf::from("/tmp/fips-gateway.sock")
+        }
+    }
+    #[cfg(windows)]
+    {
+        PathBuf::from("21211")
+    }
+}
+
 /// Read a bare bech32 nsec from a key file.
 pub fn read_key_file(path: &Path) -> Result<String, ConfigError> {
     let contents = std::fs::read_to_string(path).map_err(|e| ConfigError::ReadFile {

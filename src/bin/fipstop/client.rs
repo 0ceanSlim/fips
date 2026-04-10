@@ -11,14 +11,6 @@ pub struct ControlClient {
 }
 
 impl ControlClient {
-    #[cfg(unix)]
-    pub fn new(socket_path: &std::path::Path) -> Self {
-        Self {
-            address: socket_path.to_string_lossy().into_owned(),
-        }
-    }
-
-    #[cfg(windows)]
     pub fn new(socket_path: &std::path::Path) -> Self {
         Self {
             address: socket_path.to_string_lossy().into_owned(),

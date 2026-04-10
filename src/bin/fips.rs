@@ -41,7 +41,14 @@ struct Args {
 }
 
 /// Run the FIPS daemon (shared between foreground and service modes).
-async fn run_daemon(config_path: Option<PathBuf>) {
+///
+/// `config_path` overrides the default config search. `shutdown_signal`
+/// is awaited to trigger a graceful stop — in foreground mode this is
+/// Ctrl+C / SIGTERM, in service mode it's the service stop event.
+async fn run_daemon(
+    config_path: Option<PathBuf>,
+    shutdown_signal: impl std::future::Future<Output = ()>,
+) {
     // Load configuration before initializing logging so we can use
     // the config's log_level as the tracing filter default.
     let (config, loaded_paths) = if let Some(config_path) = &config_path {
@@ -128,23 +135,10 @@ async fn run_daemon(config_path: Option<PathBuf>) {
         std::process::exit(1);
     }
 
-    info!("FIPS running, press Ctrl+C to exit");
+    info!("FIPS running");
 
-    // Run the RX event loop until shutdown signal (SIGINT or SIGTERM).
+    // Run the RX event loop until shutdown signal.
     // stop() drops the packet channel, causing run_rx_loop to exit.
-    #[cfg(unix)]
-    let shutdown = async {
-        use tokio::signal::unix::{SignalKind, signal};
-        let mut sigterm =
-            signal(SignalKind::terminate()).expect("failed to register SIGTERM handler");
-        tokio::select! {
-            _ = tokio::signal::ctrl_c() => {},
-            _ = sigterm.recv() => {},
-        }
-    };
-    #[cfg(not(unix))]
-    let shutdown = tokio::signal::ctrl_c();
-
     tokio::select! {
         result = node.run_rx_loop() => {
             match result {
@@ -152,7 +146,7 @@ async fn run_daemon(config_path: Option<PathBuf>) {
                 Err(e) => error!("RX loop error: {}", e),
             }
         }
-        _ = shutdown => {
+        _ = shutdown_signal => {
             info!("Shutdown signal received");
         }
     }
@@ -167,6 +161,24 @@ async fn run_daemon(config_path: Option<PathBuf>) {
     info!("FIPS shutdown complete");
 }
 
+/// Build a shutdown future for foreground mode (Ctrl+C / SIGTERM).
+async fn foreground_shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        let mut sigterm =
+            signal(SignalKind::terminate()).expect("failed to register SIGTERM handler");
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {},
+            _ = sigterm.recv() => {},
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
+}
+
 // ============================================================================
 // Unix entry point
 // ============================================================================
@@ -175,7 +187,7 @@ async fn run_daemon(config_path: Option<PathBuf>) {
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
     let args = Args::parse();
-    run_daemon(args.config).await;
+    run_daemon(args.config, foreground_shutdown_signal()).await;
 }
 
 // ============================================================================
@@ -218,7 +230,7 @@ fn main() {
         .build()
         .expect("Failed to create tokio runtime");
 
-    rt.block_on(run_daemon(args.config));
+    rt.block_on(run_daemon(args.config, foreground_shutdown_signal()));
 }
 
 #[cfg(windows)]
@@ -259,7 +271,7 @@ mod service {
 
     /// Core service logic: register control handler, run daemon, report status.
     fn run_service(_arguments: Vec<OsString>) -> Result<(), windows_service::Error> {
-        let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
         let shutdown_tx = std::sync::Mutex::new(Some(shutdown_tx));
 
         let event_handler = move |control_event| -> ServiceControlHandlerResult {
@@ -295,81 +307,12 @@ mod service {
             .build()
             .expect("Failed to create tokio runtime");
 
-        rt.block_on(async {
-            // Look for config file path from FIPS_CONFIG env var
-            let config_path: Option<PathBuf> = std::env::var("FIPS_CONFIG").ok().map(PathBuf::from);
+        // Look for config file path from FIPS_CONFIG env var
+        let config_path: Option<PathBuf> = std::env::var("FIPS_CONFIG").ok().map(PathBuf::from);
 
-            let (config, loaded_paths) = if let Some(ref config_path) = config_path {
-                match fips::Config::load_file(config_path) {
-                    Ok(config) => (config, vec![config_path.clone()]),
-                    Err(_) => match fips::Config::load() {
-                        Ok(result) => result,
-                        Err(_) => (fips::Config::new(), vec![]),
-                    },
-                }
-            } else {
-                match fips::Config::load() {
-                    Ok(result) => result,
-                    Err(_) => (fips::Config::new(), vec![]),
-                }
-            };
-
-            let log_level = config.node.log_level();
-            let filter = tracing_subscriber::EnvFilter::builder()
-                .with_default_directive(log_level.into())
-                .from_env_lossy();
-            tracing_subscriber::fmt()
-                .with_env_filter(filter)
-                .with_target(true)
-                .init();
-
-            tracing::info!(
-                "FIPS {} starting as Windows service",
-                fips::version::short_version()
-            );
-
-            let resolved = match fips::config::resolve_identity(&config, &loaded_paths) {
-                Ok(r) => r,
-                Err(e) => {
-                    tracing::error!("Failed to resolve identity: {}", e);
-                    return;
-                }
-            };
-
-            let mut config = config;
-            config.node.identity.nsec = Some(resolved.nsec);
-
-            let mut node = match fips::Node::new(config) {
-                Ok(node) => node,
-                Err(e) => {
-                    tracing::error!("Failed to create node: {}", e);
-                    return;
-                }
-            };
-
-            if let Err(e) = node.start().await {
-                tracing::error!("Failed to start node: {}", e);
-                return;
-            }
-
-            tracing::info!("FIPS service running");
-
-            tokio::select! {
-                result = node.run_rx_loop() => {
-                    match result {
-                        Ok(()) => tracing::info!("RX loop exited"),
-                        Err(e) => tracing::error!("RX loop error: {}", e),
-                    }
-                }
-                _ = &mut shutdown_rx => {
-                    tracing::info!("Service stop signal received");
-                }
-            }
-
-            if let Err(e) = node.stop().await {
-                tracing::warn!("Error during shutdown: {}", e);
-            }
-        });
+        rt.block_on(super::run_daemon(config_path, async {
+            let _ = shutdown_rx.await;
+        }));
 
         // Report stopped
         status_handle.set_service_status(ServiceStatus {
@@ -408,9 +351,7 @@ mod service {
 
         let service = match manager.create_service(&service_info, ServiceAccess::CHANGE_CONFIG) {
             Ok(s) => s,
-            Err(windows_service::Error::Winapi(ref e))
-                if e.raw_os_error() == Some(0x431) =>
-            {
+            Err(windows_service::Error::Winapi(ref e)) if e.raw_os_error() == Some(0x431) => {
                 // ERROR_SERVICE_EXISTS (1073) — open the existing service instead
                 println!(
                     "Service '{}' already exists, updating configuration...",

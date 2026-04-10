@@ -205,7 +205,6 @@ jobs:
   test-windows:
     name: Unit tests (Windows)
     runs-on: windows-latest
-    needs: [build]
     steps:
       - uses: actions/checkout@v4
 

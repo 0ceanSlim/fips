@@ -45,7 +45,7 @@ pub type TunOutboundRx = tokio::sync::mpsc::Receiver<Vec<u8>>;
 #[derive(Debug, Error)]
 pub enum TunError {
     #[error("failed to create TUN device: {0}")]
-    Create(String),
+    Create(#[source] Box<dyn std::error::Error + Send + Sync>),
 
     #[error("failed to configure TUN device: {0}")]
     Configure(String),
@@ -68,7 +68,7 @@ pub enum TunError {
 #[cfg(unix)]
 impl From<tun::Error> for TunError {
     fn from(e: tun::Error) -> Self {
-        TunError::Create(e.to_string())
+        TunError::Create(Box::new(e))
     }
 }
 
@@ -360,7 +360,7 @@ pub fn run_tun_reader(
     outbound_tx: TunOutboundTx,
     transport_mtu: u16,
 ) {
-    let (name, mut buf, max_mss) = tun_reader_setup(&device, mtu, transport_mtu);
+    let (name, mut buf, max_mss) = tun_reader_setup(device.name(), mtu, transport_mtu);
 
     loop {
         match device.read_packet(&mut buf) {
@@ -421,7 +421,7 @@ pub fn run_tun_reader(
 ) {
     let _shutdown_fd = ShutdownFd(shutdown_fd);
     let tun_fd = device.device().as_raw_fd();
-    let (name, mut buf, max_mss) = tun_reader_setup(&device, mtu, transport_mtu);
+    let (name, mut buf, max_mss) = tun_reader_setup(device.name(), mtu, transport_mtu);
 
     // Set TUN fd to non-blocking so we can use select + read without blocking
     // past the point where select returns readable.
@@ -497,12 +497,11 @@ pub fn run_tun_reader(
     // _shutdown_fd closes on drop
 }
 
-/// Common setup for TUN reader: extracts name, allocates buffer, computes max MSS.
-#[cfg(unix)]
-fn tun_reader_setup(device: &TunDevice, mtu: u16, transport_mtu: u16) -> (String, Vec<u8>, u16) {
+/// Common setup for TUN reader: allocates buffer, computes max MSS.
+fn tun_reader_setup(device_name: &str, mtu: u16, transport_mtu: u16) -> (String, Vec<u8>, u16) {
     use super::icmp::effective_ipv6_mtu;
 
-    let name = device.name().to_string();
+    let name = device_name.to_string();
     let buf = vec![0u8; mtu as usize + 100];
 
     const IPV6_HEADER: u16 = 40;
@@ -525,7 +524,6 @@ fn tun_reader_setup(device: &TunDevice, mtu: u16, transport_mtu: u16) -> (String
 }
 
 /// Process a single TUN packet. Returns `false` if the reader should exit.
-#[cfg(unix)]
 fn handle_tun_packet(
     packet: &mut [u8],
     max_mss: u16,
@@ -671,10 +669,13 @@ mod windows_tun {
 
             // Load the wintun DLL
             let wintun = unsafe { wintun::load() }.map_err(|e| {
-                TunError::Create(format!(
-                    "Failed to load wintun.dll: {}. Download from https://www.wintun.net/",
-                    e
-                ))
+                TunError::Create(
+                    format!(
+                        "Failed to load wintun.dll: {}. Download from https://www.wintun.net/",
+                        e
+                    )
+                    .into(),
+                )
             })?;
 
             // Create or reopen the adapter.
@@ -683,17 +684,20 @@ mod windows_tun {
             let adapter = match wintun::Adapter::create(&wintun, ADAPTER_NAME, name, None) {
                 Ok(a) => a,
                 Err(e) => {
-                    return Err(TunError::Create(format!(
-                        "Failed to create wintun adapter '{}': {}. Run as Administrator.",
-                        name, e
-                    )));
+                    return Err(TunError::Create(
+                        format!(
+                            "Failed to create wintun adapter '{}': {}. Run as Administrator.",
+                            name, e
+                        )
+                        .into(),
+                    ));
                 }
             };
 
             // Start a session with the configured ring buffer capacity
-            let session = adapter
-                .start_session(WINTUN_RING_CAPACITY)
-                .map_err(|e| TunError::Create(format!("Failed to start wintun session: {}", e)))?;
+            let session = adapter.start_session(WINTUN_RING_CAPACITY).map_err(|e| {
+                TunError::Create(format!("Failed to start wintun session: {}", e).into())
+            })?;
 
             let session = Arc::new(session);
 
@@ -826,7 +830,14 @@ mod windows_tun {
                     );
                 }
 
-                match self.session.allocate_send_packet(packet.len() as u16) {
+                let pkt_len = match u16::try_from(packet.len()) {
+                    Ok(len) => len,
+                    Err(_) => {
+                        warn!(name = %self.name, len = packet.len(), "Dropping oversized packet for TUN");
+                        continue;
+                    }
+                };
+                match self.session.allocate_send_packet(pkt_len) {
                     Ok(mut send_packet) => {
                         send_packet.bytes_mut().copy_from_slice(&packet);
                         self.session.send_packet(send_packet);
@@ -859,80 +870,23 @@ mod windows_tun {
         outbound_tx: TunOutboundTx,
         transport_mtu: u16,
     ) {
-        use crate::upper::icmp::{
-            DestUnreachableCode, build_dest_unreachable, effective_ipv6_mtu, should_send_icmp_error,
-        };
-        use crate::upper::tcp_mss::clamp_tcp_mss;
-
-        let name = device.name().to_string();
-        let mut buf = vec![0u8; mtu as usize + 100]; // Extra space for headers
-
-        // Calculate maximum safe TCP MSS from the effective IPv6 MTU
-        const IPV6_HEADER: u16 = 40;
-        const TCP_HEADER: u16 = 20;
-        let effective_mtu = effective_ipv6_mtu(transport_mtu);
-        let max_mss = effective_mtu
-            .saturating_sub(IPV6_HEADER)
-            .saturating_sub(TCP_HEADER);
-
-        debug!(
-            name = %name,
-            tun_mtu = mtu,
-            transport_mtu = transport_mtu,
-            effective_mtu = effective_mtu,
-            max_mss = max_mss,
-            "TUN reader starting"
-        );
+        let (name, mut buf, max_mss) = super::tun_reader_setup(device.name(), mtu, transport_mtu);
 
         loop {
             match device.read_packet(&mut buf) {
                 Ok(n) if n > 0 => {
-                    let packet = &mut buf[..n];
-                    log_ipv6_packet(packet);
-
-                    // Must be a valid IPv6 packet
-                    if packet.len() < 40 || packet[0] >> 4 != 6 {
-                        continue;
-                    }
-
-                    // Check if destination is a FIPS address (fd::/8 prefix)
-                    if packet[24] == crate::identity::FIPS_ADDRESS_PREFIX {
-                        // Clamp TCP MSS if this is a SYN packet
-                        if clamp_tcp_mss(packet, max_mss) {
-                            trace!(
-                                name = %name,
-                                max_mss = max_mss,
-                                "Clamped TCP MSS in SYN packet"
-                            );
-                        }
-
-                        // Forward to Node for session encapsulation and routing
-                        if outbound_tx.blocking_send(packet.to_vec()).is_err() {
-                            break; // Channel closed, shutdown
-                        }
-                    } else {
-                        // Non-FIPS destination: send ICMPv6 Destination Unreachable
-                        if should_send_icmp_error(packet)
-                            && let Some(response) = build_dest_unreachable(
-                                packet,
-                                DestUnreachableCode::NoRoute,
-                                our_addr.to_ipv6(),
-                            )
-                        {
-                            trace!(
-                                name = %name,
-                                len = response.len(),
-                                "Sending ICMPv6 Destination Unreachable (non-FIPS destination)"
-                            );
-                            if tun_tx.send(response).is_err() {
-                                break;
-                            }
-                        }
+                    if !super::handle_tun_packet(
+                        &mut buf[..n],
+                        max_mss,
+                        &name,
+                        our_addr,
+                        &tun_tx,
+                        &outbound_tx,
+                    ) {
+                        break;
                     }
                 }
-                Ok(_) => {
-                    // Zero-length read, continue
-                }
+                Ok(_) => {}
                 Err(e) => {
                     let err_str = format!("{}", e);
                     if !err_str.contains("Bad address") {
